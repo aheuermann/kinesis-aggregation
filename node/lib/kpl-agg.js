@@ -10,10 +10,11 @@
 
 'use strict';
 const crypto = require("crypto");
-const async = require('async')
+const async = require('async');
 
 const common = require('./common');
-const AggregatedRecord = common.AggregatedRecord
+const AggregatedRecord = common.AggregatedRecord;
+
 
 // calculate the maximum amount of data to accumulate before emitting to
 // kinesis. 1MB - 16 bytes for checksum and the length of the magic number
@@ -22,8 +23,7 @@ const KINESIS_MAX_PAYLOAD_BYTES = (1024 * 1024) - 16 - Buffer.byteLength(common.
 
 function calculateVarIntSize(value) {
 	if (value < 0) {
-		raise
-		Error("Size values should not be negative.");
+		throw new Error("Size values should not be negative.");
 	} else if (value == 0) {
 		return 1;
 	}
@@ -56,9 +56,9 @@ function calculateRecordSize(self, record) {
 	let messageSize = 0;
 
 	// calculate the total new message size when aggregated into protobuf
-	if (!self.partitionKeyTable.hasOwnProperty(record.partitionKey)) {
+	if (!self.partitionKeyTable.hasOwnProperty(self.partitionKey)) {
 		// add the size of the partition key when encoded
-		const pkLength = record.partitionKey.length;
+		const pkLength = self.partitionKey.length;
 		messageSize += 1; // (message index + wire type for PK table)
 		messageSize += calculateVarIntSize(pkLength); // size of pk lengthvalue
 		messageSize += pkLength; // actual pk length
@@ -76,7 +76,7 @@ function calculateRecordSize(self, record) {
 
 	// add the sizes of the partition and hash key indexes
 	let innerRecordSize = 1;
-	innerRecordSize += calculateVarIntSize(getPotentialIndex(self.partitionKeyTable, record.partitionKey, self.partitionKeyCount));
+	innerRecordSize += calculateVarIntSize(getPotentialIndex(self.partitionKeyTable, self.partitionKey, self.partitionKeyCount));
 	// explicit hash key field (this is optional)
 	if (record.explicitHashKey) {
 		innerRecordSize += 1;
@@ -103,7 +103,7 @@ function calculateRecordSize(self, record) {
 	return messageSize
 }
 
-function aggregateRecord(records) {
+function aggregateRecord(records, pk) {
 	if (common.debug) {
 		console.log("Protobuf Aggregation of " + records.length + " records");
 	}
@@ -114,8 +114,8 @@ function aggregateRecord(records) {
 	let explicitHashKeyCount = 0;
 	const putRecords = records.map(function (record) {
 		// add the partition key and explicit hash key entries
-		if (!partitionKeyTable.hasOwnProperty(record.partitionKey)) {
-			partitionKeyTable[record.partitionKey] = partitionKeyCount;
+		if (!partitionKeyTable.hasOwnProperty(pk)) {
+			partitionKeyTable[pk] = partitionKeyCount;
 			partitionKeyCount += 1;
 		}
 
@@ -129,7 +129,7 @@ function aggregateRecord(records) {
 		// add the AggregatedRecord object with partition and hash
 		// key indexes
 		return {
-			"partition_key_index": partitionKeyTable[record.partitionKey],
+			"partition_key_index": partitionKeyTable[pk],
 			"explicit_hash_key_index": explicitHashKeyTable[record.explicitHashKey],
 			data: record.data,
 			tags: []
@@ -169,22 +169,13 @@ function aggregateRecord(records) {
 }
 
 
-function generateEncodedRecord(records) {
+function generateEncodedRecord(records, pk) {
 	if (common.debug) {
 		console.log("generate " + records.length + " records.");
 	}
 
-	if (records.length == 0) {
+	if (records.length === 0) {
 		return;
-	}
-
-	// do our best to find a valid partition key to use
-	let pk;
-	for (var i = 0; i < records.length; i++) {
-		if (records[i].partitionKey) {
-			pk = records[i].partitionKey;
-			break;
-		}
 	}
 
 	// do our best to find a valid explicit hash key to use
@@ -197,44 +188,36 @@ function generateEncodedRecord(records) {
 	}
 	const encodedRecord = {
 		partitionKey: pk,
-		data: aggregateRecord(records)
+		data: aggregateRecord(records, pk)
 	}
 	// if we find an ExplicitHashKey set it
 	if(ehk !== undefined) {
 		encodedRecord["ExplicitHashKey"] = ehk
 	}
-	// return encoded record 
+	// return encoded record
 	return encodedRecord
 }
 
-// call onReadyCallback with encoded record
-function callOnReadyCallback(err, records, onReadyCallback) {
-	if (onReadyCallback) {
-		if (err) {
-			onReadyCallback(err)
-		} else {
-			onReadyCallback(null, generateEncodedRecord(records))
-		}
-	}
-}
+
 
 /**
  * RecordAggregator build an object which aggregate records with a max size of 1Mo.
- * @param {*} onReadyCallback 
+ * @param {*} onReadyCallback
  */
 function RecordAggregator(onReadyCallback) {
-
 	this.totalBytes = 0;
 	this.putRecords = [];
 	this.partitionKeyTable = {};
 	this.partitionKeyCount = 0;
 	this.explicitHashKeyTable = {};
 	this.explicitHashKeyCount = 0;
+	this.partitionKey = common.randomPartitionKey();
 
 	this.onReadyCallback = onReadyCallback;
+}
 
-};
-module.exports = RecordAggregator;
+
+module.exports.RecordAggregator = RecordAggregator;
 
 /**
  * Set onReadyCallback
@@ -246,7 +229,7 @@ RecordAggregator.prototype.setOnReadyCallback = function (onReadyCallback) {
 		this.onReadyCallback = onReadyCallback
 	}
 	return this.onReadyCallback
-}
+};
 
 /**
  * reset this object to empty (all records currently in the object
@@ -259,6 +242,7 @@ RecordAggregator.prototype.clearRecords = function () {
 	this.partitionKeyCount = 0;
 	this.explicitHashKeyTable = {};
 	this.explicitHashKeyCount = 0;
+	this.partitionKey = common.randomPartitionKey();
 };
 
 /**
@@ -269,8 +253,12 @@ RecordAggregator.prototype.flushBufferedRecords = function (onReadyCallback) {
 	if (common.debug) {
 		console.log("calculated totalBytes=" + this.totalBytes);
 	}
-	callOnReadyCallback(null, this.putRecords, onReadyCallback ||  this.onReadyCallback);
+	onReadyCallback(null, generateEncodedRecord(this.putRecords, this.partitionKey));
 	this.clearRecords();
+};
+
+RecordAggregator.prototype.onError = function (err, onReadyCallback) {
+	onReadyCallback(err);
 };
 
 /**
@@ -281,16 +269,13 @@ RecordAggregator.prototype.flushBufferedRecords = function (onReadyCallback) {
  */
 RecordAggregator.prototype.aggregateRecords = function (records, forceFlush, onReadyCallback) {
 	const self = this;
-	const _onReadyCallback = onReadyCallback || this.onReadyCallback
+	const _onReadyCallback = onReadyCallback || this.onReadyCallback;
 	records.forEach(function (record) {
 
-		let messageSize = calculateRecordSize(self, record)
+		let messageSize = calculateRecordSize(self, record);
 
 		if (!record.data) {
-			return callOnReadyCallback(new Error('Record.Data field is mandatory'), record, _onReadyCallback)
-		}
-		if (!record.partitionKey) {
-			return callOnReadyCallback(new Error('record.partitionKey field is mandatory'), record, _onReadyCallback)
+			return _onReadyCallback(new Error('Record.Data field is mandatory'));
 		}
 
 		if (common.debug) {
@@ -303,16 +288,15 @@ RecordAggregator.prototype.aggregateRecords = function (records, forceFlush, onR
 		// if the size of this record would push us over the limit,
 		// then encode the current set
 		if (messageSize > KINESIS_MAX_PAYLOAD_BYTES) {
-			callOnReadyCallback(new Error('Input record (PK=' + record.partitionKey +
+            _onReadyCallback(new Error('Input record (PK=' + record.partitionKey +
 				', EHK=' + record.explicitHashKey +
 				', SizeBytes=' + messageSize +
-				') is too large to fit inside a single Kinesis record.'), null, _onReadyCallback);
+				') is too large to fit inside a single Kinesis record.'));
 		} else if ((self.totalBytes + messageSize) > KINESIS_MAX_PAYLOAD_BYTES) {
 			if (common.debug) {
 				console.log("calculated totalBytes=" + self.totalBytes);
 			}
-			callOnReadyCallback(null, self.putRecords, _onReadyCallback);
-			self.clearRecords();
+			self.flushBufferedRecords(_onReadyCallback);
 
 			// total size tracked is now the size of the current record
 			self.totalBytes = calculateRecordSize(self, record)
@@ -343,8 +327,7 @@ RecordAggregator.prototype.aggregateRecords = function (records, forceFlush, onR
 	});
 
 	if (forceFlush === true && self.putRecords.length > 0) {
-		callOnReadyCallback(null, this.putRecords, _onReadyCallback);
-		this.clearRecords();
+		self.flushBufferedRecords(_onReadyCallback);
 	}
 
 };
@@ -360,6 +343,10 @@ RecordAggregator.prototype.aggregateRecords = function (records, forceFlush, onR
  * @param {number} [queueSize] maximum concurrency when processing encoded records (1 per default)
  */
 module.exports.aggregate = (records, encodedRecordHandler, afterPutAggregatedRecords, errorCallback, queueSize = 1) => {
+	if (!records.length) {
+		errorCallback(new Error('No records'));
+		return afterPutAggregatedRecords()
+	}
 
 	const taskHandler = (params, done) => {
 		encodedRecordHandler(params, (err, result) => {
@@ -368,14 +355,14 @@ module.exports.aggregate = (records, encodedRecordHandler, afterPutAggregatedRec
 			}
 			done()
 		})
-	}
+	};
 
 	const aggregatorQueue = async.queue(taskHandler, queueSize);
 
 	// when all task is done call afterPutAggregatedRecords callback
 	aggregatorQueue.drain = () => {
 		afterPutAggregatedRecords()
-	}
+	};
 
 	// aggregator call back
 	const onReadyCallback = (error, encoded) => {
@@ -383,14 +370,9 @@ module.exports.aggregate = (records, encodedRecordHandler, afterPutAggregatedRec
 			return errorCallback(error, encoded)
 		}
 		aggregatorQueue.push(encoded)
-	}
+	};
 
-	const aggregator = new RecordAggregator(onReadyCallback)
+	const aggregator = new RecordAggregator(onReadyCallback);
 
-	aggregator.aggregateRecords(records, true)
-
-	if (!aggregatorQueue.started) {
-		errorCallback(new Error('No records'))
-		afterPutAggregatedRecords()
-	}
-}
+	aggregator.aggregateRecords(records, true);
+};
