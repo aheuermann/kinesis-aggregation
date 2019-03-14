@@ -4,3 +4,5 @@ node/.project
 python/.project
 
 python/.pydevproject
+
+.idea/

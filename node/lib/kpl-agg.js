@@ -202,16 +202,17 @@ function generateEncodedRecord(records, pk) {
 
 /**
  * RecordAggregator build an object which aggregate records with a max size of 1Mo.
+ * @param partitionKey
  * @param {*} onReadyCallback
  */
-function RecordAggregator(onReadyCallback) {
+function RecordAggregator(partitionKey, onReadyCallback) {
 	this.totalBytes = 0;
 	this.putRecords = [];
 	this.partitionKeyTable = {};
 	this.partitionKeyCount = 0;
 	this.explicitHashKeyTable = {};
 	this.explicitHashKeyCount = 0;
-	this.partitionKey = common.randomPartitionKey();
+	this.partitionKey = partitionKey;
 
 	this.onReadyCallback = onReadyCallback;
 }
@@ -242,7 +243,6 @@ RecordAggregator.prototype.clearRecords = function () {
 	this.partitionKeyCount = 0;
 	this.explicitHashKeyTable = {};
 	this.explicitHashKeyCount = 0;
-	this.partitionKey = common.randomPartitionKey();
 };
 
 /**
@@ -369,7 +369,8 @@ module.exports.aggregate = (records, encodedRecordHandler, afterPutAggregatedRec
 		aggregatorQueue.push(encoded)
 	};
 
-	const aggregator = new RecordAggregator(onReadyCallback);
+	const partitionKey = records[0].partitionKey; //get the partitionKey from the first record
+	const aggregator = new RecordAggregator(partitionKey,  onReadyCallback);
 
 	aggregator.aggregateRecords(records, true);
 };
